@@ -4,12 +4,12 @@ export default class ChannelManager extends EventEmitter {
 
     constructor(opts = {}) {
         super();
-        this.channels = null;
         this.logger = opts.logger ?? console;
         this._rabbitmq = opts.rabbitmq;
 
         this._channel = null;
         this._connection = null;
+        this._connecting = false;
         this._connectingwaiters = [];
 
     }
@@ -18,7 +18,7 @@ export default class ChannelManager extends EventEmitter {
         if (this._channel) {
             return this._channel;
         }
-        if (this._connectingwaiters.length > 0) {
+        if (this._connecting) {
             return new Promise((resolve, reject) => {
                 this._connectingwaiters.push({ resolve, reject });
             });
@@ -27,37 +27,38 @@ export default class ChannelManager extends EventEmitter {
     }
 
     async _connect() {
-        this._connection = true;
+        this._connecting = true;
         try{
             let connection;
 
             if(this._rabbitmq.connection){
                 connection = this._rabbitmq.connection;
             }else{
-                baseChanel = await this._rabbitmq.connect();
-                if(!baseChanel.connection){
+                const baseChannel = await this._rabbitmq.connect();
+                if(!baseChannel.connection){
                     throw new Error('Failed to connect to RabbitMQ');
                 }
-                connection = baseChanel.connection;
+                connection = baseChannel.connection;
 
             }
-            const confirmchannel = await connection.createConfirmChannel();
+            const confirmChannel = await connection.createConfirmChannel();
 
-            confirmchannel.on('drain',()=>{
+            confirmChannel.on('drain',()=>{
                 this.emit('drain');
             });
 
-            confirmchannel.on('error',(err)=>{
+            confirmChannel.on('error',(err)=>{
                 this.logger.error(`[ChannelManager] channel error: ${err.message}`);
                 this._handleConnectionError(err);
             });
 
-            confirmchannel.on('close',()=>{
+            confirmChannel.on('close',()=>{
                 this.logger.warn(`[ChannelManager] channel closed`);
                 this._handleConnectionError(new Error('Channel closed'));
             });
 
-            this._channel = confirmchannel;
+            this._channel = confirmChannel;
+            this._connecting = false;
             this.logger.info(`[ChannelManager] channel created successfully`);
             this._connectingwaiters.forEach(waiter => waiter.resolve(this._channel));
             this._connectingwaiters = [];
@@ -65,6 +66,7 @@ export default class ChannelManager extends EventEmitter {
 
         }
         catch(err){
+            this._connecting = false;
             this.logger.error(`[ChannelManager] connection error: ${err.message}`);
             this._connectingwaiters.forEach(waiter => waiter.reject(err));
             this._connectingwaiters = [];
@@ -72,11 +74,10 @@ export default class ChannelManager extends EventEmitter {
             throw err;
         }
     }
-    
+
     _handleConnectionError(err){
         this._channel = null;
         this._connection = null;
         this.emit('error', err);
     }
 }
-
